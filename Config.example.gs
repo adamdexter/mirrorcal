@@ -16,16 +16,17 @@ var CONFIG = {
     // { id: 'abc123@group.calendar.google.com', label: 'Side project', colorId: '7' },
   ],
 
-  // Calendar to mirror INTO (your "Calendar Audit" calendar). Create a fresh
-  // calendar for this — MirrorCal manages its contents.
+  // Calendar to mirror INTO. Create a fresh calendar for this — MirrorCal
+  // manages its contents.
   TARGET_CALENDAR: 'xxxxxxxxxxxx@group.calendar.google.com',
 
-  // Sync window (days). Past events matter for audits — keep some history.
+  // Sync window (days).
   DAYS_PAST: 14,
   DAYS_FUTURE: 30,
 
   // Copy source event descriptions onto the clones? Off by default: invite
-  // threads and meeting links often live there, and audits rarely need them.
+  // threads and meeting links often live there, and a mirror calendar you
+  // share or annotate rarely needs them.
   COPY_DESCRIPTION: false,
 
   // Skip events marked "Free" (transparent) — usually reminders/FYI holds.
@@ -34,11 +35,12 @@ var CONFIG = {
   // Skip events you've declined.
   SKIP_DECLINED: true,
 
-  // Keep client edits to a clone's title and color across re-syncs, and always
-  // preserve the Calendar Audit tag block in the description.
+  // Keep your edits to a clone (title, color, description) across re-syncs.
+  // MirrorCal remembers what it last wrote and only overwrites its own writing.
   PRESERVE_CLIENT_EDITS: true,
 
-  // Append an empty Calendar Audit tag block to every clone so tagging can be done
-  // right in Google Calendar by filling in the blanks.
-  ADD_EMPTY_TAG_BLOCK: true,
+  // Optional: text appended to every new clone's description — a notes
+  // scaffold, a checklist, anything. Apps built on MirrorCal use this too
+  // (e.g. Calendar Audit Pro seeds its tag block here). '' to disable.
+  CLONE_DESCRIPTION_TEMPLATE: '',
 };

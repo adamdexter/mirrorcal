@@ -1,14 +1,16 @@
 /**
- * MirrorCal — annotation-preserving Google Calendar mirror.
+ * MirrorCal — a privacy-preserving, edit-safe Google Calendar mirror.
  *
  * Mirrors events from one or more source calendars into a single target
- * ("Calendar Audit") calendar with attendees stripped, so the owner can
- * freely retitle, recolor, and annotate the copies without affecting the
- * original events or their guests.
+ * calendar with all attendees stripped, so the owner can freely retitle,
+ * recolor, and annotate the copies without affecting the original events or
+ * notifying their guests. (Think Notion Calendar's "blocking"/auto-block
+ * feature — open source, running entirely in your own Google account.)
  *
  * Unlike naive merge scripts, MirrorCal patches clones in place using
- * incremental sync tokens, so annotations (the Calendar Audit tag block in the
- * description, color changes, renamed titles) survive re-syncs.
+ * incremental sync tokens, and it treats anything you change on a clone
+ * (title, color, description) as yours: it remembers what it last wrote and
+ * only ever overwrites its own writing.
  *
  * Entry points:
  *   setupTriggers()  — one-time: installs per-calendar update triggers + nightly reconcile
@@ -108,9 +110,7 @@ function syncSource_(src, forceFull, seenKeys) {
       var params = { singleEvents: true, maxResults: 250, showDeleted: true };
       if (pageToken) params.pageToken = pageToken;
       if (syncToken && !pageToken) params.syncToken = syncToken;
-      if (syncToken) {
-        // nothing else allowed alongside a sync token
-      } else {
+      if (!syncToken) {
         params.timeMin = isoOffsetDays_(-CONFIG.DAYS_PAST);
         params.timeMax = isoOffsetDays_(CONFIG.DAYS_FUTURE);
       }
@@ -145,7 +145,7 @@ function syncSource_(src, forceFull, seenKeys) {
 function processEvent_(src, ev, seenKeys) {
   // Never clone a clone (covers misconfiguration where a target feeds a source).
   var evProps = (ev.extendedProperties && ev.extendedProperties.private) || {};
-  if (evProps.ca_src_key) return;
+  if (evProps.mc_src_key) return;
 
   var key = srcKey_(src.id, ev.id);
 
@@ -179,7 +179,7 @@ function srcKey_(calendarId, eventId) {
 function findCloneByKey_(key) {
   var resp = withBackoff_(function () {
     return Calendar.Events.list(CONFIG.TARGET_CALENDAR, {
-      privateExtendedProperty: 'ca_src_key=' + key,
+      privateExtendedProperty: 'mc_src_key=' + key,
       maxResults: 2,
       showDeleted: false,
     });
@@ -190,51 +190,54 @@ function findCloneByKey_(key) {
 
 /**
  * Build the clone event resource. Mirrored fields (time, title, location)
- * come from the source; annotation fields (tag block, client color/title
- * edits) are preserved from the existing clone.
+ * come from the source; the owner's edits to the clone (title, color,
+ * description) are preserved — MirrorCal only overwrites its own writing,
+ * which it remembers in mc_* extended properties.
  */
 function buildCloneResource_(src, ev, existing) {
   var mirrorTitle = (src.label ? '[' + src.label + '] ' : '') + (ev.summary || 'Busy');
   var existingProps = (existing && existing.extendedProperties && existing.extendedProperties.private) || {};
 
-  // Title: keep a client's rename if PRESERVE_CLIENT_EDITS and they changed it
-  // since we last mirrored (we remember what we last wrote in ca_mirror_title).
+  // Title: keep the owner's rename if they changed it since we last mirrored.
   var title = mirrorTitle;
   if (existing && CONFIG.PRESERVE_CLIENT_EDITS) {
-    var lastMirrored = existingProps.ca_mirror_title;
+    var lastMirrored = existingProps.mc_mirror_title;
     var current = stripCancelledPrefix_(existing.summary || '');
     if (lastMirrored && current !== lastMirrored) title = existing.summary;
   }
 
-  // Color: same preservation logic via ca_mirror_color.
+  // Color: same preservation rule via mc_mirror_color.
   var mirrorColor = src.colorId || null;
   var colorId = mirrorColor;
   if (existing && CONFIG.PRESERVE_CLIENT_EDITS) {
-    var lastColor = existingProps.ca_mirror_color || '';
+    var lastColor = existingProps.mc_mirror_color || '';
     var currentColor = existing.colorId || '';
     if (currentColor !== lastColor) colorId = existing.colorId || null;
   }
 
-  // Description: mirrored source text (optional) + preserved/created tag block.
-  var existingBlock = existing ? extractTagBlock_(existing.description || '') : null;
-  var block = existingBlock !== null ? existingBlock : (CONFIG.ADD_EMPTY_TAG_BLOCK ? emptyTagBlock_() : '');
+  // Description: MirrorCal's version is the mirrored source text (optional)
+  // plus the configured template. Once the owner edits the description
+  // (detected by hash of what we last authored), their version is kept.
   var mirroredDesc = CONFIG.COPY_DESCRIPTION ? (ev.description || '') : '';
-  var description = joinNonEmpty_([mirroredDesc, block], '\n\n');
-
-  // Mirror tags parsed from the block into extended properties so any API
-  // consumer (Calendar Audit Pro) can query them. The description block is authoritative.
-  var tags = parseTagBlock_(block);
+  var authored = joinNonEmpty_([mirroredDesc, CONFIG.CLONE_DESCRIPTION_TEMPLATE || ''], '\n\n');
+  var description = authored;
+  var descHash = hashText_(authored);
+  if (existing && CONFIG.PRESERVE_CLIENT_EDITS && existingProps.mc_mirror_desc_hash !== undefined && existingProps.mc_mirror_desc_hash !== null) {
+    var currentHash = hashText_(existing.description || '');
+    if (currentHash !== existingProps.mc_mirror_desc_hash) {
+      description = existing.description || '';
+      descHash = existingProps.mc_mirror_desc_hash; // still "what MirrorCal last authored"
+    }
+  }
 
   var privateProps = {
-    ca_src_key: srcKey_(src.id, ev.id),
-    ca_src_cal: src.id,
-    ca_src_event_id: ev.id,
-    ca_synced_at: new Date().toISOString(),
-    ca_mirror_title: mirrorTitle,
-    ca_mirror_color: mirrorColor || '',
-    ca_energy: tags.energy || '',
-    ca_zone: tags.zone || '',
-    ca_action: tags.action || '',
+    mc_src_key: srcKey_(src.id, ev.id),
+    mc_src_cal: src.id,
+    mc_src_event_id: ev.id,
+    mc_synced_at: new Date().toISOString(),
+    mc_mirror_title: mirrorTitle,
+    mc_mirror_color: mirrorColor || '',
+    mc_mirror_desc_hash: descHash,
   };
 
   var resource = {
@@ -251,21 +254,34 @@ function buildCloneResource_(src, ev, existing) {
   return resource;
 }
 
+/** Has the owner changed this clone since MirrorCal last wrote it? */
+function ownerEdited_(clone) {
+  var props = (clone.extendedProperties && clone.extendedProperties.private) || {};
+  if (props.mc_mirror_title !== undefined && stripCancelledPrefix_(clone.summary || '') !== props.mc_mirror_title) {
+    return true;
+  }
+  if ((clone.colorId || '') !== (props.mc_mirror_color || '')) return true;
+  if (props.mc_mirror_desc_hash !== undefined && hashText_(clone.description || '') !== props.mc_mirror_desc_hash) {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Cancelled source event: clones the owner never touched are deleted; edited
+ * clones are the owner's records and are kept, marked [CANCELLED].
+ */
 function handleCancelled_(key) {
   var clone = findCloneByKey_(key);
   if (!clone) return;
-  var cloneProps = (clone.extendedProperties && clone.extendedProperties.private) || {};
-  var hasTags = !!(cloneProps.ca_energy || cloneProps.ca_zone || cloneProps.ca_action) ||
-    tagBlockHasValues_(extractTagBlock_(clone.description || ''));
 
-  if (hasTags) {
-    // Tagged clones are audit records — keep them, mark as cancelled.
+  if (ownerEdited_(clone)) {
     if ((clone.summary || '').indexOf('[CANCELLED]') !== 0) {
       withBackoff_(function () {
         return Calendar.Events.patch(
           {
             summary: '[CANCELLED] ' + (clone.summary || ''),
-            extendedProperties: { private: { ca_cancelled: 'true' } },
+            extendedProperties: { private: { mc_cancelled: 'true' } },
           },
           CONFIG.TARGET_CALENDAR,
           clone.id
@@ -281,7 +297,7 @@ function handleCancelled_(key) {
 
 /**
  * After a full reconcile, remove (or mark) clones in the window whose source
- * event no longer exists. Only touches events that carry our ca_src_key and
+ * event no longer exists. Only touches events that carry our mc_src_key and
  * whose source calendar is still configured.
  */
 function pruneOrphanClones_(seenKeys) {
@@ -302,91 +318,18 @@ function pruneOrphanClones_(seenKeys) {
     });
     (resp.items || []).forEach(function (clone) {
       var p = (clone.extendedProperties && clone.extendedProperties.private) || {};
-      if (!p.ca_src_key) return;           // not ours — never touch
-      if (!sourceIds[p.ca_src_cal]) return; // source no longer configured — leave alone
-      if (p.ca_cancelled === 'true') return;
-      if (!seenKeys[p.ca_src_key]) handleCancelled_(p.ca_src_key);
+      if (!p.mc_src_key) return;           // not ours — never touch
+      if (!sourceIds[p.mc_src_cal]) return; // source no longer configured — leave alone
+      if (p.mc_cancelled === 'true') return;
+      if (!seenKeys[p.mc_src_key]) handleCancelled_(p.mc_src_key);
     });
     pageToken = resp.nextPageToken || null;
   } while (pageToken);
 }
 
 // ---------------------------------------------------------------------------
-// Calendar Audit tag block (kept in lockstep with the @mirrorcal/core codec)
+// Utilities
 // ---------------------------------------------------------------------------
-
-var TAG_BLOCK_START = '─────── Calendar Audit ───────';
-var TAG_BLOCK_END = '──────────────────────────────';
-
-function emptyTagBlock_() {
-  return [
-    TAG_BLOCK_START,
-    'Energy:        (+ / -)',
-    'Zone:          (I / C / E / G)',
-    'Action:        (Drop / Delegate / Develop / Design / Own)',
-    'Note:  ',
-    TAG_BLOCK_END,
-  ].join('\n');
-}
-
-/** Returns the tag block substring from a description, or null if absent. */
-function extractTagBlock_(description) {
-  var text = htmlToText_(description || '');
-  // Dashes on both sides of the name, so prose mentioning "calendar audit"
-  // never reads as a block. Kept in lockstep with the TypeScript codec.
-  var m = text.match(/─{2,}[^\n─]*calendar audit[^\n─]*─{2,}/i);
-  if (!m) return null;
-  var startIdx = m.index;
-  // Walk back to the start of the fence line, forward to the closing fence.
-  var lineStart = text.lastIndexOf('\n', startIdx) + 1;
-  var endFence = text.indexOf(TAG_BLOCK_END, startIdx);
-  if (endFence === -1) {
-    // Tolerate a missing/edited closing fence: take to end of text.
-    return text.slice(lineStart);
-  }
-  return text.slice(lineStart, endFence + TAG_BLOCK_END.length);
-}
-
-function tagBlockHasValues_(block) {
-  if (!block) return false;
-  var t = parseTagBlock_(block);
-  return !!(t.energy || t.zone || t.action || t.note);
-}
-
-/** Forgiving parser: case-insensitive, shorthand keys, word values. */
-function parseTagBlock_(block) {
-  var tags = {};
-  if (!block) return tags;
-  htmlToText_(block).split('\n').forEach(function (line) {
-    var m = line.match(/^\s*(energy|e|zone|z|action|a|note|n)\s*[:=]\s*(.*)$/i);
-    if (!m) return;
-    var keyRaw = m[1].toLowerCase();
-    var value = m[2].replace(/\(.*?\)/g, '').trim(); // drop "(+ / -)" hints
-    if (!value) return;
-    if (keyRaw === 'energy' || keyRaw === 'e') {
-      var v = value.charAt(0);
-      if (v === '+' || /^(plus|pos)/i.test(value)) tags.energy = '+';
-      else if (v === '-' || v === '–' || /^(minus|neg)/i.test(value)) tags.energy = '-';
-    } else if (keyRaw === 'zone' || keyRaw === 'z') {
-      var z = value.charAt(0).toUpperCase();
-      if ('ICEG'.indexOf(z) !== -1) tags.zone = z;
-      else if (/^gen/i.test(value)) tags.zone = 'G';
-      else if (/^exc/i.test(value)) tags.zone = 'E';
-      else if (/^inc/i.test(value)) tags.zone = 'I';
-      else if (/^com/i.test(value)) tags.zone = 'C';
-    } else if (keyRaw === 'action' || keyRaw === 'a') {
-      var a = value.toLowerCase();
-      if (/^drop/.test(a)) tags.action = 'Drop';
-      else if (/^deleg/.test(a)) tags.action = 'Delegate';
-      else if (/^devel/.test(a)) tags.action = 'Develop';
-      else if (/^design/.test(a)) tags.action = 'Design';
-      else if (/^own/.test(a)) tags.action = 'Own';
-    } else if (keyRaw === 'note' || keyRaw === 'n') {
-      tags.note = m[2].trim();
-    }
-  });
-  return tags;
-}
 
 /** Google Calendar descriptions can arrive as HTML; normalize to plain text. */
 function htmlToText_(s) {
@@ -403,9 +346,19 @@ function htmlToText_(s) {
     .replace(/\r\n/g, '\n');
 }
 
-// ---------------------------------------------------------------------------
-// Utilities
-// ---------------------------------------------------------------------------
+/**
+ * Small stable hash (djb2, base36) of normalized text. Records what
+ * description MirrorCal last authored on a clone. Kept in lockstep with
+ * hashText in the @mirrorcal/core TypeScript library.
+ */
+function hashText_(s) {
+  var h = 5381;
+  var text = htmlToText_(s).trim();
+  for (var i = 0; i < text.length; i++) {
+    h = ((h << 5) + h + text.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(36);
+}
 
 function isoOffsetDays_(days) {
   return new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString();
