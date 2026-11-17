@@ -52,6 +52,7 @@ MirrorCal is a [Google Apps Script](https://script.google.com) — a small progr
 ## Usage notes
 
 - Your edits to copies are safe: rename them, recolor them, write anything in the description — re-syncs preserve all of it while still updating times and locations from the source.
+- Per-source `includeFree: true` mirrors that calendar's "Free" events even when `SKIP_FREE_EVENTS` is on; `SKIP_BUSY_PLACEHOLDERS` drops other tools' "Busy" blocker copies.
 - `CLONE_DESCRIPTION_TEMPLATE` seeds every new copy's description with text of your choice (a notes scaffold, a checklist, an app's structured block).
 - To add another source calendar later: edit `Config.gs`, then run `setupTriggers` again.
 - To start over: run `removeTriggers`, delete the copies (or the whole mirror calendar), run `resetSyncState`.

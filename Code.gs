@@ -153,7 +153,7 @@ function processEvent_(src, ev, seenKeys) {
     handleCancelled_(key);
     return;
   }
-  if (CONFIG.SKIP_FREE_EVENTS && ev.transparency === 'transparent') return;
+  if (CONFIG.SKIP_FREE_EVENTS && !src.includeFree && ev.transparency === 'transparent') return;
   if (CONFIG.SKIP_DECLINED && isDeclinedBySelf_(ev)) return;
   if (CONFIG.SKIP_BUSY_PLACEHOLDERS && String(ev.summary || '').trim().toLowerCase() === 'busy') return;
 

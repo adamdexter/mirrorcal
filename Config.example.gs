@@ -13,6 +13,7 @@ var CONFIG = {
   // "[Work] Standup". colorId (optional, '1'–'11') colors the copies.
   SOURCE_CALENDARS: [
     { id: 'you@gmail.com', label: '', colorId: null },
+    // includeFree: true on a source mirrors its "Free" events too.
     // { id: 'abc123@group.calendar.google.com', label: 'Side project', colorId: '7' },
   ],
 
