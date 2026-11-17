@@ -39,6 +39,11 @@ var CONFIG = {
   // MirrorCal remembers what it last wrote and only overwrites its own writing.
   PRESERVE_CLIENT_EDITS: true,
 
+  // Skip events titled exactly "Busy" — the placeholder name used by
+  // availability blockers (Notion Calendar, Outlook). Prevents double-mirroring
+  // when a source already contains another tool's blocker copies.
+  SKIP_BUSY_PLACEHOLDERS: false,
+
   // Optional: text appended to every new clone's description — a notes
   // scaffold, a checklist, anything. Apps built on MirrorCal use this too
   // (e.g. Calendar Audit Pro seeds its tag block here). '' to disable.

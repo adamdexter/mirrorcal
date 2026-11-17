@@ -155,6 +155,7 @@ function processEvent_(src, ev, seenKeys) {
   }
   if (CONFIG.SKIP_FREE_EVENTS && ev.transparency === 'transparent') return;
   if (CONFIG.SKIP_DECLINED && isDeclinedBySelf_(ev)) return;
+  if (CONFIG.SKIP_BUSY_PLACEHOLDERS && String(ev.summary || '').trim().toLowerCase() === 'busy') return;
 
   if (seenKeys) seenKeys[key] = true;
 
